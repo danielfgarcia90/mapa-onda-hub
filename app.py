@@ -4,11 +4,14 @@ import folium
 from streamlit_folium import st_folium
 from math import radians, sin, cos, sqrt, atan2
 
+# ===== CONFIG =====
 st.set_page_config(page_title="Mapa Diretor", layout="wide")
-st.title("📍 Simulador Completo de Cobertura")
+st.title("Cobertura por Área - Piloto HUB")
 
+# ===== LOAD DATA =====
 postos = pd.read_csv("postos_full.csv")
 
+# ===== ANALISTAS =====
 analistas = pd.DataFrame([
 ["Ana Mereu","Consumidor",-22.350212627482474,-47.38617494641834],
 ["Beatriz","Infra",-23.186911398457767,-50.650036859404075],
@@ -40,61 +43,107 @@ analistas = pd.DataFrame([
 ["Thalles","Infra",-23.22996742420059,-46.84475682152807]
 ], columns=["Analista","Area","Lat","Lon"])
 
-# ===== FILTROS =====
+# ===== RAIO DINÂMICO =====
+raio_km = st.sidebar.slider(
+    "Raio de cobertura (km)",
+    min_value=10,
+    max_value=100,
+    value=35,
+    step=5
+)
 
-# Filtro de área
+# ===== FILTROS =====
 areas = st.sidebar.multiselect(
-    "Selecione as Áreas:",
+    "Selecione as Áreas",
     options=sorted(analistas["Area"].unique()),
     default=list(analistas["Area"].unique())
 )
 
-# Filtra analistas pelas áreas escolhidas
-analistas_filtrados_area = analistas[analistas["Area"].isin(areas)]
+analistas_area = analistas[analistas["Area"].isin(areas)]
 
-# Filtro de analistas (dinâmico baseado na área)
-nomes_analistas = sorted(analistas_filtrados_area["Analista"].unique())
+nomes = sorted(analistas_area["Analista"].unique())
 
 analistas_select = st.sidebar.multiselect(
-    "Selecione os Analistas:",
-    options=nomes_analistas,
-    default=nomes_analistas
+    "Selecione os Analistas",
+    options=nomes,
+    default=nomes
 )
 
-# Resultado final (Área + Analista)
-analistas_sel = analistas_filtrados_area[
-    analistas_filtrados_area["Analista"].isin(analistas_select)
+analistas_sel = analistas_area[
+    analistas_area["Analista"].isin(analistas_select)
 ]
 
-# distância
+# ===== FUNÇÃO DISTÂNCIA =====
 def dist(lat1, lon1, lat2, lon2):
-    R=6371
-    dlat=radians(lat2-lat1)
-    dlon=radians(lon2-lon1)
-    a=sin(dlat/2)**2+cos(radians(lat1))*cos(radians(lat2))*sin(dlon/2)**2
-    return 2*R*atan2(sqrt(a), sqrt(1-a))
+    R = 6371
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)**2
+    return 2 * R * atan2(sqrt(a), sqrt(1-a))
 
-cobertos=0
-cobertos_set=set()
-for i,p in postos.iterrows():
-    for _,a in analistas_sel.iterrows():
-        if dist(a['Lat'],a['Lon'],p['Latitude'],p['Longitude'])<=35:
+# ===== COBERTURA =====
+postos_cobertos = []
+cobertos_set = set()
+
+for i, p in postos.iterrows():
+    for _, a in analistas_sel.iterrows():
+        if dist(a['Lat'], a['Lon'], p['Latitude'], p['Longitude']) <= raio_km:
+            postos_cobertos.append(p)
             cobertos_set.add(i)
             break
-cobertos=len(cobertos_set)
 
-col1,col2,col3=st.columns(3)
+postos_cobertos_df = pd.DataFrame(postos_cobertos)
+cobertos = len(cobertos_set)
+
+
+# ===== KPI =====
+col1, col2, col3 = st.columns(3)
 col1.metric("Cobertos", cobertos)
 col2.metric("Total", len(postos))
-col3.metric("Cobertura %", round(cobertos/len(postos)*100,1))
+col3.metric("Cobertura %", round(cobertos / len(postos) * 100, 1))
 
-m=folium.Map(location=[-22.8,-47.5], zoom_start=5)
+# ===== DOWNLOAD (MOVER PRA CÁ) =====
 
-for _,a in analistas_sel.iterrows():
-    folium.Circle([a['Lat'],a['Lon']], radius=35000,color='blue',fill=True,fill_opacity=0.1).add_to(m)
+csv = postos_cobertos_df.to_csv(index=False).encode('utf-8')
 
-for i,p in postos.iterrows():
-    color='green' if i in cobertos_set else 'red'
-    folium.CircleMarker([p['Latitude'],p['Longitude']], radius=2,color=color).add_to(m)
+st.download_button(
+    label=f"📥 Baixar Postos Cobertos ({len(postos_cobertos_df)})",
+    data=csv,
+    file_name="postos_cobertos.csv",
+    mime="text/csv"
+)
 
-st_folium(m,width=1200,height=700)
+# ===== MAPA =====
+cores_area = {
+    "Consumidor": "green",
+    "Infra": "blue",
+    "N2 Tech": "purple",
+    "Revenda": "orange",
+    "Rollout": "cadetblue"
+}
+
+m = folium.Map(location=[-22.8, -47.5], zoom_start=5)
+
+# círculos analistas
+for _, a in analistas_sel.iterrows():
+    cor = cores_area.get(a["Area"], "blue")
+
+    folium.Circle(
+        location=[a['Lat'], a['Lon']],
+        radius=raio_km * 1000,
+        color=cor,
+        fill=True,
+        fill_opacity=0.15,
+        popup=f"{a['Analista']} | {a['Area']} | {raio_km} km"
+    ).add_to(m)
+
+# postos
+for i, p in postos.iterrows():
+    color = "green" if i in cobertos_set else "red"
+    folium.CircleMarker(
+        location=[p['Latitude'], p['Longitude']],
+        radius=3,
+        color=color
+    ).add_to(m)
+
+st_folium(m, width=1200, height=700)
